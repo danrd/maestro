@@ -102,14 +102,22 @@ isolation between toolkit modules is settled.
   every game given into a `PlayerProfile` + opening groups + one
   cross-game feedback text, cached by the exact set of games + settings
   involved).
+- **`maestro/app.py`** - a minimal [Gradio](https://gradio.app) front end:
+  paste a username and PGN, get per-game analysis plus (once enough games
+  are pasted) the cross-game pattern summary. No LLM key is required to
+  use it - without `OPENROUTER_API_KEY` set it still runs the full
+  engine analysis and shows the structured statistics, just without the
+  prose commentary; the key only unlocks the LLM coaching text on top.
+  Run with `uv run --extra ui python -m maestro.app`.
 
 ## Not built yet
 
 - **Running against a real player's real history.** Every piece above
-  is built and tested (including two full pipelines run end to end
-  against real Stockfish - see `tests/test_pipeline.py`), but only ever
-  against a handful of test games. Nobody has pointed it at an actual
-  Lichess account's full game history yet.
+  is built and tested (including two full pipelines, and the Gradio app
+  itself, run end to end against real Stockfish - see
+  `tests/test_pipeline.py`/`tests/test_app.py`), but only ever against a
+  handful of test games. Nobody has pointed it at an actual Lichess
+  account's full game history yet.
 - **Opening classification for manually-imported PGNs.** A game's
   `opening` field (`game_report.py`) only gets filled in when the source
   PGN already has `ECO`/`Opening` tags (true for Lichess API imports,

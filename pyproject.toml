@@ -33,6 +33,9 @@ hf = [
 logging = [
     "wandb",
 ]
+ui = [
+    "gradio",
+]
 test = [
     "pytest",
 ]
