@@ -239,6 +239,91 @@ def test_analyze_and_coach_games_does_not_cache_a_prompt_that_did_not_fit(monkey
     assert row is None
 
 
+# -- analyze_and_coach_profile ------------------------------------------
+
+class _FakeAnalyzerWithMistake:
+    """Like _FakeAnalyzer, but returns a real flagged mistake (White,
+    move 3, loss well above any reasonable threshold) so profile
+    aggregation has something to aggregate."""
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, pgn_texts, stockfish_path, limit, multipv, num_workers,
+                  mistake_threshold_cp, safe_alternatives_cap, opening_ply_cutoff):
+        self.calls.append(list(pgn_texts))
+        return [
+            GameAnalysis(game_id=compute_game_hash(text), moves=[
+                MoveAnalysis(move_number=3, color=chess.WHITE, played_move="Qh5",
+                              played_score_cp=-50, best_move="Nf3", best_score_cp=50,
+                              safe_alternatives=2),
+            ])
+            for text in pgn_texts
+        ]
+
+
+def test_analyze_and_coach_profile_returns_profile_groups_and_feedback(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzerWithMistake())
+    conn = open_store(":memory:")
+    runner = _FakeRunner(responses=["Cross-game feedback."])
+
+    result = pipeline_module.analyze_and_coach_profile(
+        conn, [GAME_A], "fake-stockfish-path", chess.engine.Limit(depth=5),
+        _FakeTokenizer(), runner, player_name="Alice", profile_min_games=1,
+    )
+
+    assert result.feedback == "Cross-game feedback."
+    assert result.profile.total_games == 1
+    assert any(s.mistake_count == 1 for s in result.profile.phase_stats)
+    assert len(runner.calls) == 1
+
+
+def test_analyze_and_coach_profile_second_call_is_a_cache_hit(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzerWithMistake())
+    conn = open_store(":memory:")
+    runner = _FakeRunner(responses=["Feedback."])
+    limit = chess.engine.Limit(depth=5)
+
+    pipeline_module.analyze_and_coach_profile(conn, [GAME_A], "fake-stockfish-path", limit,
+                                               _FakeTokenizer(), runner, player_name="Alice",
+                                               profile_min_games=1)
+    result = pipeline_module.analyze_and_coach_profile(conn, [GAME_A], "fake-stockfish-path", limit,
+                                                         _FakeTokenizer(), runner, player_name="Alice",
+                                                         profile_min_games=1)
+
+    assert len(runner.calls) == 1  # second call never touched the runner
+    assert result.feedback == "Feedback."
+
+
+def test_analyze_and_coach_profile_different_game_set_is_a_different_cache_key(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzerWithMistake())
+    conn = open_store(":memory:")
+    runner = _FakeRunner(responses=["First.", "Second."])
+    limit = chess.engine.Limit(depth=5)
+
+    pipeline_module.analyze_and_coach_profile(conn, [GAME_A], "fake-stockfish-path", limit,
+                                               _FakeTokenizer(), runner, player_name="Alice",
+                                               profile_min_games=1)
+    pipeline_module.analyze_and_coach_profile(conn, [GAME_A, GAME_B], "fake-stockfish-path", limit,
+                                               _FakeTokenizer(), runner, player_name="Alice",
+                                               profile_min_games=1)
+
+    assert len(runner.calls) == 2
+
+
+def test_analyze_and_coach_profile_without_player_name_yields_an_empty_profile(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzerWithMistake())
+    conn = open_store(":memory:")
+    runner = _FakeRunner(responses=["Feedback anyway."])
+
+    result = pipeline_module.analyze_and_coach_profile(
+        conn, [GAME_A], "fake-stockfish-path", chess.engine.Limit(depth=5),
+        _FakeTokenizer(), runner, profile_min_games=1,  # no player_name
+    )
+
+    assert result.profile.phase_stats == []  # can't attribute mistakes without player_color
+    assert result.feedback == "Feedback anyway."  # still generates something, just says so
+
+
 # -- real Stockfish, opt-in ------------------------------------------------
 
 def _find_stockfish() -> Optional[str]:

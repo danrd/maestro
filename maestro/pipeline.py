@@ -21,10 +21,15 @@ from maestro.game_store import (
     compute_params_hash,
     get_cached_feedback,
     get_cached_report,
+    get_pgn,
     import_games,
     save_feedback,
     save_report,
 )
+from maestro.opening_profile import OpeningGroupSummary, build_opening_groups
+from maestro.opening_signature import extract_move_prefix
+from maestro.player_profile import PlayerProfile, build_player_profile
+from maestro.profile_coaching import ProfileCoachingConfig, generate_profile_coaching_feedback
 
 
 def _analysis_params_hash(multipv: int, mistake_threshold_cp: int, safe_alternatives_cap: int,
@@ -127,3 +132,69 @@ def analyze_and_coach_games(conn: sqlite3.Connection, pgn_texts: List[str], stoc
         results.append(CoachedGame(report=report, feedback=feedback))
 
     return results
+
+
+@dataclass
+class ProfileCoachingResult:
+    profile: PlayerProfile
+    opening_groups: List[OpeningGroupSummary]
+    feedback: Optional[str]  # None if the coaching prompt didn't fit its token_limit
+
+
+def analyze_and_coach_profile(conn: sqlite3.Connection, pgn_texts: List[str], stockfish_path: str,
+                               limit: chess.engine.Limit, tokenizer, runner,
+                               multipv: int = 3, mistake_threshold_cp: int = 50,
+                               safe_alternatives_cap: int = 5, opening_ply_cutoff: int = 10,
+                               player_name: Optional[str] = None, num_workers: Optional[int] = None,
+                               profile_min_games: int = 5,
+                               coaching_config: Optional[ProfileCoachingConfig] = None) -> ProfileCoachingResult:
+    """Analyze (or reuse cached reports for) every game in `pgn_texts`,
+    aggregate them into a PlayerProfile (phase-of-game patterns, see
+    player_profile.py) and opening groups (recurring lines, see
+    opening_profile.py), then generate cross-game coaching feedback -
+    reusing a cached feedback text if one already exists for this exact
+    combination of game set + settings.
+
+    `player_name` is required in practice: without it, reports have no
+    `player_color`, and player_profile.py / opening_profile.py can't
+    attribute any mistake to the tracked player at all.
+    """
+    coaching_config = coaching_config or ProfileCoachingConfig()
+    reports = analyze_and_cache_games(
+        conn, pgn_texts, stockfish_path, limit, multipv, mistake_threshold_cp,
+        safe_alternatives_cap, opening_ply_cutoff, player_name, num_workers,
+    )
+
+    game_hashes = [compute_game_hash(text) for text in pgn_texts]
+    reports_by_hash = dict(zip(game_hashes, reports))
+    moves_by_hash = {
+        game_hash: extract_move_prefix(get_pgn(conn, game_hash) or text)
+        for game_hash, text in zip(game_hashes, pgn_texts)
+    }
+
+    profile = build_player_profile(reports, min_games=profile_min_games)
+    opening_groups = build_opening_groups(reports_by_hash, moves_by_hash, min_games=profile_min_games)
+
+    analysis_hash = _analysis_params_hash(multipv, mistake_threshold_cp, safe_alternatives_cap,
+                                           opening_ply_cutoff, limit)
+    profile_params_hash = compute_params_hash(
+        game_hashes=sorted(game_hashes), analysis_params=analysis_hash,
+        profile_min_games=profile_min_games, max_phase_buckets=coaching_config.max_phase_buckets,
+        max_openings=coaching_config.max_openings, language=coaching_config.language,
+        token_limit=coaching_config.token_limit,
+    )
+    # Not a real per-game hash - the feedback table's schema doesn't
+    # care what the key means, and reusing it here avoids a whole extra
+    # table just for this one aggregate-level cache entry. Prefixed so
+    # it can never collide with an actual game hash (a hex sha256).
+    profile_cache_key = "profile:" + profile_params_hash
+
+    cached_feedback = get_cached_feedback(conn, profile_cache_key, profile_params_hash)
+    if cached_feedback is not None:
+        return ProfileCoachingResult(profile=profile, opening_groups=opening_groups, feedback=cached_feedback)
+
+    feedback = generate_profile_coaching_feedback(profile, opening_groups, tokenizer, runner, coaching_config)
+    if feedback is not None:
+        save_feedback(conn, profile_cache_key, profile_params_hash, feedback)
+
+    return ProfileCoachingResult(profile=profile, opening_groups=opening_groups, feedback=feedback)
