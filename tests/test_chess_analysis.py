@@ -18,6 +18,7 @@ from maestro.chess_analysis import (
     analyze_game,
     analyze_move,
     analyze_position,
+    count_safe_alternatives,
 )
 
 
@@ -182,3 +183,86 @@ def test_analyze_game_prefers_the_event_header_for_game_id():
     result = analyze_game(engine, game, chess.engine.Limit(depth=1), multipv=1)
 
     assert result.game_id == "World Championship"
+
+
+# -- count_safe_alternatives ---------------------------------------------
+
+def test_count_safe_alternatives_counts_lines_within_threshold():
+    board = chess.Board()
+    # Best-first, monotonically non-increasing - matches how a real
+    # engine's multipv response is ordered.
+    engine = _FakeEngine(responses=[[
+        _line(E4, 50, chess.WHITE), _line(NF3, 40, chess.WHITE),
+        _line(D4, -20, chess.WHITE), _line(A3, -80, chess.WHITE),
+    ]])
+
+    count = count_safe_alternatives(engine, board, best_score_cp=50,
+                                     limit=chess.engine.Limit(depth=1),
+                                     mistake_threshold_cp=50, cap=4)
+
+    # 50-50=0, 50-40=10, 50-(-20)=70, 50-(-80)=130 -> first two are < 50
+    assert count == 2
+
+
+def test_count_safe_alternatives_is_capped():
+    board = chess.Board()
+    engine = _FakeEngine(responses=[[_line(E4, 50, chess.WHITE), _line(NF3, 49, chess.WHITE)]])
+
+    count = count_safe_alternatives(engine, board, best_score_cp=50,
+                                     limit=chess.engine.Limit(depth=1),
+                                     mistake_threshold_cp=1000, cap=2)
+
+    assert count == 2  # both lines pass, but only 2 were ever requested (multipv=cap)
+    assert engine.calls[0][1] == 2  # requested multipv == cap
+
+
+# -- analyze_move: safe_alternatives wiring --------------------------------
+
+def test_analyze_move_skips_safe_alternatives_within_the_opening_cutoff():
+    board = chess.Board()  # ply() == 0
+    engine = _FakeEngine(responses=[[_line(E4, 50, chess.WHITE), _line(A3, -100, chess.WHITE)]])
+
+    result = analyze_move(engine, board, A3, chess.engine.Limit(depth=1), multipv=2,
+                           mistake_threshold_cp=50, opening_ply_cutoff=10)
+
+    assert result.loss_cp == 150  # would clear the threshold...
+    assert result.safe_alternatives is None  # ...but ply 0 < opening_ply_cutoff=10
+    assert len(engine.calls) == 1  # no extra call for safe alternatives
+
+
+def test_analyze_move_computes_safe_alternatives_past_the_opening_cutoff_when_it_is_a_mistake():
+    board = chess.Board()
+    engine = _FakeEngine(responses=[
+        [_line(E4, 50, chess.WHITE), _line(A3, -100, chess.WHITE)],  # the move itself
+        [_line(E4, 50, chess.WHITE), _line(NF3, 40, chess.WHITE)],   # count_safe_alternatives call
+    ])
+
+    result = analyze_move(engine, board, A3, chess.engine.Limit(depth=1), multipv=2,
+                           mistake_threshold_cp=50, safe_alternatives_cap=2, opening_ply_cutoff=0)
+
+    assert result.loss_cp == 150
+    assert result.safe_alternatives == 2  # both queued lines in the second call pass
+    assert len(engine.calls) == 2
+    assert engine.calls[1][1] == 2  # the follow-up call used the cap as multipv
+
+
+def test_analyze_move_does_not_compute_safe_alternatives_when_not_a_mistake():
+    board = chess.Board()
+    engine = _FakeEngine(responses=[[_line(E4, 50, chess.WHITE), _line(NF3, 48, chess.WHITE)]])
+
+    result = analyze_move(engine, board, NF3, chess.engine.Limit(depth=1), multipv=2,
+                           mistake_threshold_cp=50, opening_ply_cutoff=0)
+
+    assert result.loss_cp == 2  # below the threshold
+    assert result.safe_alternatives is None
+    assert len(engine.calls) == 1
+
+
+def test_analyze_move_leaves_safe_alternatives_none_when_no_threshold_given():
+    board = chess.Board()
+    engine = _FakeEngine(responses=[[_line(E4, 50, chess.WHITE), _line(A3, -100, chess.WHITE)]])
+
+    result = analyze_move(engine, board, A3, chess.engine.Limit(depth=1), multipv=2)
+
+    assert result.safe_alternatives is None
+    assert len(engine.calls) == 1

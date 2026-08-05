@@ -32,8 +32,9 @@ def load_pgn_games(path: str) -> List[str]:
     return games
 
 
-def _analyze_game_text(pgn_text: str, stockfish_path: str,
-                        limit: chess.engine.Limit, multipv: int) -> GameAnalysis:
+def _analyze_game_text(pgn_text: str, stockfish_path: str, limit: chess.engine.Limit, multipv: int,
+                        mistake_threshold_cp: Optional[int], safe_alternatives_cap: int,
+                        opening_ply_cutoff: int) -> GameAnalysis:
     """Open a fresh engine for this one game, analyze it, and close the
     engine again before returning.
 
@@ -52,17 +53,23 @@ def _analyze_game_text(pgn_text: str, stockfish_path: str,
     """
     game = chess.pgn.read_game(io.StringIO(pgn_text))
     with chess.engine.SimpleEngine.popen_uci(stockfish_path) as engine:
-        return analyze_game(engine, game, limit, multipv)
+        return analyze_game(engine, game, limit, multipv,
+                             mistake_threshold_cp, safe_alternatives_cap, opening_ply_cutoff)
 
 
 def analyze_pgn_games_parallel(pgn_texts: List[str], stockfish_path: str,
                                 limit: chess.engine.Limit, multipv: int = 3,
-                                num_workers: Optional[int] = None) -> List[GameAnalysis]:
+                                num_workers: Optional[int] = None,
+                                mistake_threshold_cp: Optional[int] = None,
+                                safe_alternatives_cap: int = 5,
+                                opening_ply_cutoff: int = 10) -> List[GameAnalysis]:
     """Analyze every game in `pgn_texts` (e.g. from load_pgn_games)
     concurrently across a process pool. Results come back in the same
     order as `pgn_texts`, regardless of completion order."""
     with ProcessPoolExecutor(max_workers=num_workers) as pool:
         futures = [
-            pool.submit(_analyze_game_text, text, stockfish_path, limit, multipv) for text in pgn_texts
+            pool.submit(_analyze_game_text, text, stockfish_path, limit, multipv,
+                        mistake_threshold_cp, safe_alternatives_cap, opening_ply_cutoff)
+            for text in pgn_texts
         ]
         return [future.result() for future in futures]

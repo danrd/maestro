@@ -28,6 +28,11 @@ class MoveAnalysis:
     best_move: Optional[str]  # SAN
     best_score_cp: Optional[int]
     candidate_lines: List[Tuple[str, int]] = field(default_factory=list)  # (SAN, score_cp), best first
+    # How many legal moves in this position were themselves "safe" (see
+    # count_safe_alternatives) - only computed for moves that turned out
+    # to be mistakes, past the opening cutoff; None everywhere else,
+    # meaning "not evaluated", not "zero alternatives".
+    safe_alternatives: Optional[int] = None
 
     @property
     def loss_cp(self) -> Optional[int]:
@@ -68,12 +73,44 @@ def analyze_position(engine: chess.engine.SimpleEngine, board: chess.Board,
     return lines
 
 
+def count_safe_alternatives(engine: chess.engine.SimpleEngine, board: chess.Board, best_score_cp: int,
+                             limit: chess.engine.Limit, mistake_threshold_cp: int, cap: int = 5) -> int:
+    """How many legal moves in `board` were themselves "safe" (within
+    `mistake_threshold_cp` of `best_score_cp`) - capped at `cap`, since
+    once that many qualify, whether the true count is exactly `cap` or
+    much higher doesn't change the conclusion "this was a wide-open
+    position with plenty of good options", which is the only thing this
+    number is for. Distinguishes an unforced error (many safe moves
+    existed) from missing the one move that mattered.
+
+    The top-`cap` lines from a single multipv=cap query are already
+    sorted best-first, so once one line fails the threshold every line
+    after it does too - counting how many pass is enough, no need to
+    check the rest.
+    """
+    lines = analyze_position(engine, board, limit, multipv=cap)
+    count = 0
+    for _, score in lines:
+        if best_score_cp - score >= mistake_threshold_cp:
+            break
+        count += 1
+    return count
+
+
 def analyze_move(engine: chess.engine.SimpleEngine, board: chess.Board, move: chess.Move,
-                  limit: chess.engine.Limit, multipv: int = 3) -> MoveAnalysis:
+                  limit: chess.engine.Limit, multipv: int = 3,
+                  mistake_threshold_cp: Optional[int] = None, safe_alternatives_cap: int = 5,
+                  opening_ply_cutoff: int = 10) -> MoveAnalysis:
     """Analyze the position before `move` is played: the engine's top
     candidates, and how `move` itself compares - even when it isn't
     one of those candidates. Does not mutate `board` past its original
-    state (pushes/pops internally as needed)."""
+    state (pushes/pops internally as needed).
+
+    If `mistake_threshold_cp` is given and this move's loss clears it
+    (and the position is past `opening_ply_cutoff`), also counts safe
+    alternatives - one extra engine call, only for moves that actually
+    turned out to be mistakes, so this stays cheap over a whole game.
+    """
     lines = analyze_position(engine, board, limit, multipv)
     played_score = next((score for candidate, score in lines if candidate == move), None)
 
@@ -90,20 +127,31 @@ def analyze_move(engine: chess.engine.SimpleEngine, board: chess.Board, move: ch
     candidate_lines = [(board.san(candidate), score) for candidate, score in lines]
     best_move, best_score = candidate_lines[0] if candidate_lines else (None, None)
 
+    safe_alternatives = None
+    if (mistake_threshold_cp is not None and best_score is not None and played_score is not None
+            and board.ply() >= opening_ply_cutoff
+            and best_score - played_score >= mistake_threshold_cp):
+        safe_alternatives = count_safe_alternatives(
+            engine, board, best_score, limit, mistake_threshold_cp, cap=safe_alternatives_cap,
+        )
+
     return MoveAnalysis(
         move_number=board.fullmove_number, color=board.turn, played_move=played_san,
         played_score_cp=played_score, best_move=best_move, best_score_cp=best_score,
-        candidate_lines=candidate_lines,
+        candidate_lines=candidate_lines, safe_alternatives=safe_alternatives,
     )
 
 
 def analyze_game(engine: chess.engine.SimpleEngine, game: chess.pgn.Game,
-                  limit: chess.engine.Limit, multipv: int = 3) -> GameAnalysis:
+                  limit: chess.engine.Limit, multipv: int = 3,
+                  mistake_threshold_cp: Optional[int] = None, safe_alternatives_cap: int = 5,
+                  opening_ply_cutoff: int = 10) -> GameAnalysis:
     """Replay `game`'s mainline and analyze every move in order."""
     board = game.board()
     moves = []
     for move in game.mainline_moves():
-        moves.append(analyze_move(engine, board, move, limit, multipv))
+        moves.append(analyze_move(engine, board, move, limit, multipv,
+                                   mistake_threshold_cp, safe_alternatives_cap, opening_ply_cutoff))
         board.push(move)
 
     # python-chess's default Headers pre-fills every Seven Tag Roster

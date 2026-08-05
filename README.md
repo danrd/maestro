@@ -19,11 +19,31 @@ once dependency isolation between toolkit modules is settled.
   good option here" matters for telling a blunder from an understandable
   choice), and score the move actually played against them, even when
   it isn't one of the top candidates.
+  `chess_analysis.py` also flags, for mistakes past a configurable
+  opening-move cutoff, how many *other* legal moves in that position
+  were themselves safe (`safe_alternatives`, capped) - an unforced
+  error among many good options is a different kind of mistake than
+  missing the one move that mattered.
 - **`maestro/analysis_pool.py`** - run that over many games at once, one
   Stockfish process per game task in a process pool, not one process per
   worker kept alive across tasks (see that module's docstring - the
   latter reliably deadlocked on pool shutdown; verified empirically, not
   just avoided out of caution).
+- **`maestro/game_report.py`** - pure derivation (no engine calls) from
+  an already-computed game analysis into a `GameReport`: flagged
+  mistakes sorted worst-first, opening (from PGN `ECO`/`Opening` tags),
+  which color the tracked player had, and per-move time spent (parsed
+  from PGN `%clk` comments, when present in the export).
+- **`maestro/game_store.py`** - SQLite-backed storage: games are
+  deduplicated by a hash of their parsed moves so re-importing a PGN
+  export only picks up what's actually new, and reports are cached by
+  game hash + a hash of the analysis settings that produced them, so
+  changing depth/multipv/threshold doesn't silently serve a stale
+  result under different settings.
+- **`maestro/pipeline.py`** - `analyze_and_cache_games(...)` ties the
+  above together: import what's new, reuse a cached report wherever one
+  already exists for the exact settings given, run Stockfish only on
+  what's actually missing.
 - **LLM-generated, personalized feedback on top of the raw engine
   numbers** - not built yet.
 
