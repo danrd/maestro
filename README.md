@@ -44,8 +44,17 @@ once dependency isolation between toolkit modules is settled.
   above together: import what's new, reuse a cached report wherever one
   already exists for the exact settings given, run Stockfish only on
   what's actually missing.
-- **LLM-generated, personalized feedback on top of the raw engine
-  numbers** - not built yet.
+- **`maestro/coaching.py`** - turns a `GameReport` into readable coaching
+  feedback via an LLM (built on `llm_kit`, same as `lector`): uses
+  `safe_alternatives` directly - a mistake with several safe alternatives
+  is framed as an unforced error worth calling out, one with few or none
+  as a genuinely hard moment - rather than just restating the numbers.
+- **`maestro/lichess_import.py`** - pull a Lichess user's games straight
+  from the Lichess API instead of a manually-exported PGN file, with
+  clocks/opening/evals included (opening comes from Lichess's own
+  ECO/Opening tags - no need for our own opening-book classifier; evals
+  are Lichess's stored Stockfish analysis when a game has one, a free
+  skip on recomputing that one game).
 
 ## Setup
 

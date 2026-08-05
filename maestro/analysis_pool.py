@@ -19,17 +19,25 @@ import chess.pgn
 from maestro.chess_analysis import GameAnalysis, analyze_game
 
 
+def split_pgn_games(pgn_text: str) -> List[str]:
+    """Split one multi-game PGN blob (games concatenated one after
+    another, as any PGN database export - a file on disk, a Lichess API
+    response - naturally is) into individual per-game PGN text blocks."""
+    games = []
+    stream = io.StringIO(pgn_text)
+    while True:
+        game = chess.pgn.read_game(stream)
+        if game is None:
+            break
+        games.append(str(game))
+    return games
+
+
 def load_pgn_games(path: str) -> List[str]:
     """Split a multi-game PGN database file into individual per-game PGN
     text blocks, ready to hand to analyze_pgn_games_parallel."""
-    games = []
     with open(path, encoding="utf-8") as f:
-        while True:
-            game = chess.pgn.read_game(f)
-            if game is None:
-                break
-            games.append(str(game))
-    return games
+        return split_pgn_games(f.read())
 
 
 def _analyze_game_text(pgn_text: str, stockfish_path: str, limit: chess.engine.Limit, multipv: int,
