@@ -18,6 +18,7 @@ import pytest
 
 import maestro.pipeline as pipeline_module
 from maestro.chess_analysis import GameAnalysis, MoveAnalysis
+from maestro.coaching import CoachingConfig
 from maestro.game_store import compute_game_hash, get_cached_report, open_store
 
 GAME_A = """[Event "Test"]
@@ -122,6 +123,120 @@ def test_results_preserve_input_order_regardless_of_cache_mix(monkeypatch):
     reports = pipeline_module.analyze_and_cache_games(conn, [GAME_A, GAME_B], "fake-stockfish-path", limit)
 
     assert [r.game_id for r in reports] == [compute_game_hash(GAME_A), compute_game_hash(GAME_B)]
+
+
+# -- analyze_and_coach_games ------------------------------------------------
+
+class _FakeTokenizer:
+    def tokenize(self, text):
+        return text.split()
+
+
+class _FakeRunner:
+    def __init__(self, responses=None):
+        self._responses = list(responses or [])
+        self.calls = []
+
+    def generate(self, prompt):
+        self.calls.append(prompt)
+        return self._responses.pop(0)
+
+
+def test_analyze_and_coach_games_generates_and_caches_feedback(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzer())
+    conn = open_store(":memory:")
+    runner = _FakeRunner(responses=["Coaching text for game A."])
+
+    results = pipeline_module.analyze_and_coach_games(
+        conn, [GAME_A], "fake-stockfish-path", chess.engine.Limit(depth=5),
+        _FakeTokenizer(), runner,
+    )
+
+    assert len(results) == 1
+    assert results[0].feedback == "Coaching text for game A."
+    assert len(runner.calls) == 1
+
+
+def test_analyze_and_coach_games_second_call_is_a_feedback_cache_hit(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzer())
+    conn = open_store(":memory:")
+    runner = _FakeRunner(responses=["Coaching text."])
+    limit = chess.engine.Limit(depth=5)
+
+    pipeline_module.analyze_and_coach_games(conn, [GAME_A], "fake-stockfish-path", limit,
+                                             _FakeTokenizer(), runner)
+    results = pipeline_module.analyze_and_coach_games(conn, [GAME_A], "fake-stockfish-path", limit,
+                                                        _FakeTokenizer(), runner)
+
+    assert len(runner.calls) == 1  # second call never touched the runner
+    assert results[0].feedback == "Coaching text."
+
+
+def test_analyze_and_coach_games_different_coaching_settings_bypass_the_feedback_cache(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzer())
+    conn = open_store(":memory:")
+    runner = _FakeRunner(responses=["First.", "Second."])
+    limit = chess.engine.Limit(depth=5)
+
+    pipeline_module.analyze_and_coach_games(conn, [GAME_A], "fake-stockfish-path", limit,
+                                             _FakeTokenizer(), runner,
+                                             coaching_config=CoachingConfig(max_mistakes=3))
+    pipeline_module.analyze_and_coach_games(conn, [GAME_A], "fake-stockfish-path", limit,
+                                             _FakeTokenizer(), runner,
+                                             coaching_config=CoachingConfig(max_mistakes=7))
+
+    assert len(runner.calls) == 2
+
+
+def test_analyze_and_coach_games_reusing_a_cached_report_still_generates_feedback(monkeypatch):
+    """A report can already be cached (from a plain analyze_and_cache_games
+    call) without feedback ever having been generated for it - the
+    feedback step must still run in that case, not assume "report
+    cached" implies "feedback cached"."""
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzer())
+    conn = open_store(":memory:")
+    limit = chess.engine.Limit(depth=5)
+    pipeline_module.analyze_and_cache_games(conn, [GAME_A], "fake-stockfish-path", limit)
+
+    runner = _FakeRunner(responses=["Fresh feedback."])
+    results = pipeline_module.analyze_and_coach_games(conn, [GAME_A], "fake-stockfish-path", limit,
+                                                        _FakeTokenizer(), runner)
+
+    assert len(runner.calls) == 1
+    assert results[0].feedback == "Fresh feedback."
+
+
+def test_analyze_and_coach_games_saves_feedback_under_the_game_hash(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzer())
+    conn = open_store(":memory:")
+    runner = _FakeRunner(responses=["Some text."])
+
+    pipeline_module.analyze_and_coach_games(conn, [GAME_A], "fake-stockfish-path",
+                                             chess.engine.Limit(depth=5), _FakeTokenizer(), runner)
+
+    game_hash = compute_game_hash(GAME_A)
+    # whatever the exact params hash is, *something* got cached for this game
+    row = conn.execute("SELECT feedback_text FROM feedback WHERE game_hash = ?", (game_hash,)).fetchone()
+    assert row is not None
+    assert row[0] == "Some text."
+
+
+def test_analyze_and_coach_games_does_not_cache_a_prompt_that_did_not_fit(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "analyze_pgn_games_parallel", _FakeAnalyzer())
+    conn = open_store(":memory:")
+    runner = _FakeRunner()  # never called if the prompt doesn't fit
+    config = CoachingConfig(token_limit=1)
+
+    results = pipeline_module.analyze_and_coach_games(
+        conn, [GAME_A], "fake-stockfish-path", chess.engine.Limit(depth=5),
+        _FakeTokenizer(), runner, coaching_config=config,
+    )
+
+    assert results[0].feedback is None
+    assert runner.calls == []
+    game_hash = compute_game_hash(GAME_A)
+    row = conn.execute("SELECT 1 FROM feedback WHERE game_hash = ?", (game_hash,)).fetchone()
+    assert row is None
 
 
 # -- real Stockfish, opt-in ------------------------------------------------

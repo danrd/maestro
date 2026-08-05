@@ -10,10 +10,12 @@ from maestro.game_store import (
     compute_game_hash,
     compute_params_hash,
     get_all_game_hashes,
+    get_cached_feedback,
     get_cached_report,
     get_pgn,
     import_games,
     open_store,
+    save_feedback,
     save_report,
 )
 
@@ -127,3 +129,39 @@ def test_get_cached_report_does_not_match_across_different_params():
     save_report(conn, game_hash, compute_params_hash(depth=10), _sample_report())
 
     assert get_cached_report(conn, game_hash, compute_params_hash(depth=12)) is None
+
+
+# -- feedback: save/get roundtrip ------------------------------------------
+
+def test_save_and_get_cached_feedback_roundtrips():
+    conn = open_store(":memory:")
+    game_hash = compute_game_hash(GAME_A)
+    params_hash = compute_params_hash(max_mistakes=5)
+
+    save_feedback(conn, game_hash, params_hash, "Some coaching text.")
+
+    assert get_cached_feedback(conn, game_hash, params_hash) == "Some coaching text."
+
+
+def test_get_cached_feedback_is_none_for_a_miss():
+    conn = open_store(":memory:")
+    assert get_cached_feedback(conn, "some-hash", "some-params") is None
+
+
+def test_get_cached_feedback_does_not_match_across_different_params():
+    conn = open_store(":memory:")
+    game_hash = compute_game_hash(GAME_A)
+    save_feedback(conn, game_hash, compute_params_hash(max_mistakes=5), "Text A")
+
+    assert get_cached_feedback(conn, game_hash, compute_params_hash(max_mistakes=10)) is None
+
+
+def test_save_feedback_overwrites_the_same_key():
+    conn = open_store(":memory:")
+    game_hash = compute_game_hash(GAME_A)
+    params_hash = compute_params_hash(max_mistakes=5)
+
+    save_feedback(conn, game_hash, params_hash, "First version")
+    save_feedback(conn, game_hash, params_hash, "Second version")
+
+    assert get_cached_feedback(conn, game_hash, params_hash) == "Second version"

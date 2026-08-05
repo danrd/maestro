@@ -2,13 +2,15 @@
 so re-running analysis on a game already processed with the same
 settings is a cache hit, not a re-run through Stockfish.
 
-Two tables: `games` (raw PGN text, deduplicated by a hash of the
+Three tables: `games` (raw PGN text, deduplicated by a hash of the
 parsed-and-re-rendered game - not the raw bytes, so incidental
-whitespace differences between sources don't create duplicates) and
+whitespace differences between sources don't create duplicates),
 `reports` (a GameReport as JSON, keyed by game hash + a hash of the
 analysis parameters that produced it, so changing depth/multipv/engine
 invalidates the cache instead of silently serving a stale result under
-different settings).
+different settings), and `feedback` (LLM-generated coaching text, keyed
+the same way - a game hash plus a hash of whatever settings produced
+it, since generating it isn't free either).
 """
 from __future__ import annotations
 
@@ -37,6 +39,14 @@ CREATE TABLE IF NOT EXISTS reports (
     game_hash TEXT NOT NULL,
     params_hash TEXT NOT NULL,
     report_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (game_hash, params_hash)
+);
+
+CREATE TABLE IF NOT EXISTS feedback (
+    game_hash TEXT NOT NULL,
+    params_hash TEXT NOT NULL,
+    feedback_text TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (game_hash, params_hash)
 );
@@ -118,6 +128,22 @@ def save_report(conn: sqlite3.Connection, game_hash: str, params_hash: str, repo
     conn.execute(
         "INSERT OR REPLACE INTO reports (game_hash, params_hash, report_json) VALUES (?, ?, ?)",
         (game_hash, params_hash, _report_to_json(report)),
+    )
+    conn.commit()
+
+
+def get_cached_feedback(conn: sqlite3.Connection, game_hash: str, params_hash: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT feedback_text FROM feedback WHERE game_hash = ? AND params_hash = ?",
+        (game_hash, params_hash),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def save_feedback(conn: sqlite3.Connection, game_hash: str, params_hash: str, feedback_text: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO feedback (game_hash, params_hash, feedback_text) VALUES (?, ?, ?)",
+        (game_hash, params_hash, feedback_text),
     )
     conn.commit()
 
