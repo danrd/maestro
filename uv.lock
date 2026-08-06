@@ -2036,6 +2036,7 @@ dependencies = [
 
 [package.optional-dependencies]
 hf = [
+    { name = "sentencepiece" },
     { name = "torch" },
     { name = "transformers" },
 ]
@@ -2073,6 +2074,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pydantic" },
     { name = "pytest", marker = "extra == 'test'" },
+    { name = "sentencepiece", marker = "extra == 'hf'" },
     { name = "torch", marker = "extra == 'hf'" },
     { name = "transformers", marker = "extra == 'hf'" },
     { name = "vllm", marker = "extra == 'vllm'", specifier = ">=0.6" },
