@@ -2041,6 +2041,7 @@ hf = [
     { name = "transformers" },
 ]
 llama-cpp = [
+    { name = "huggingface-hub" },
     { name = "llama-cpp-python", extra = ["server"] },
 ]
 logging = [
@@ -2050,6 +2051,8 @@ openrouter = [
     { name = "openai" },
 ]
 test = [
+    { name = "huggingface-hub" },
+    { name = "llama-cpp-python", extra = ["server"] },
     { name = "pytest" },
 ]
 ui = [
@@ -2068,8 +2071,10 @@ dev = [
 requires-dist = [
     { name = "chess" },
     { name = "gradio", marker = "extra == 'ui'" },
+    { name = "huggingface-hub", marker = "extra == 'llama-cpp'" },
     { name = "jinja2" },
     { name = "llama-cpp-python", extras = ["server"], marker = "extra == 'llama-cpp'" },
+    { name = "maestro", extras = ["llama-cpp"], marker = "extra == 'test'" },
     { name = "openai", marker = "extra == 'openrouter'" },
     { name = "pandas" },
     { name = "pydantic" },
