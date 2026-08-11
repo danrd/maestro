@@ -14,10 +14,10 @@ now is running it against a real player's real game history instead of
 test fixtures - see "Not built yet" below.
 
 Built on the same LLM pipeline infra as the `lector` project (prompt
-composition, backend-agnostic inference, a resumable task loop) -
-currently vendored in `llm_kit/`, planned to move into a shared
-[`toolkit`](https://github.com/danrd/toolkit) repo once dependency
-isolation between toolkit modules is settled.
+composition, backend-agnostic inference, a resumable task loop) - a
+dependency (`toolkit[llm-kit]`) on the shared
+[`toolkit`](https://github.com/danrd/toolkit/blob/main/llm_kit/README.md)
+repo, not vendored here anymore.
 
 ## Pieces
 
